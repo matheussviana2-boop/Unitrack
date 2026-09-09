@@ -21,6 +21,10 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
+<!-- OpenFreeMap (vetorial) via MapLibre, integrado ao Leaflet -->
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
 
 
 <style>
@@ -991,18 +995,11 @@ function _drawTrailFromBuffer(){}
 function initMap(){
   mapL=L.map('map',{zoomControl:false,attributionControl:false}).setView([-15.8,-47.9],5);
 
-  /* ── CartoDB Voyager — visual rico, detalhado, gratuito, sem marca d'água ── */
-  layerStreet = L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    {
-      subdomains:'abcd',
-      maxZoom:20,
-      keepBuffer: 4,
-      updateWhenIdle: true,
-      updateWhenZooming: false,
-      attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-    }
-  );
+  /* ── OpenFreeMap Positron — mapa vetorial clean, sem API key ── */
+  layerStreet = L.maplibreGL({
+    style:'https://tiles.openfreemap.org/styles/positron',
+    interactive:false
+  });
 
   /* ── ESRI World Imagery — satélite de alta resolução, gratuito ── */
   layerSat = L.tileLayer(
