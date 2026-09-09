@@ -21,10 +21,10 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
-<!-- OpenFreeMap (vetorial) via MapLibre, integrado ao Leaflet -->
-<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet"/>
-<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
+<!-- OpenFreeMap Positron via MapLibre GL + ponte Leaflet. Versões fixadas para evitar quebra em atualizações do CDN. -->
+<link href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
 
 
 <style>
@@ -995,11 +995,25 @@ function _drawTrailFromBuffer(){}
 function initMap(){
   mapL=L.map('map',{zoomControl:false,attributionControl:false}).setView([-15.8,-47.9],5);
 
-  /* ── OpenFreeMap Positron — mapa vetorial clean, sem API key ── */
-  layerStreet = L.maplibreGL({
-    style:'https://tiles.openfreemap.org/styles/positron',
-    interactive:false
-  });
+  /* ── OpenFreeMap Positron — principal; fallback raster mantém o app utilizável se WebGL/MapLibre falhar ── */
+  try{
+    if(typeof L.maplibreGL!=='function') throw new Error('MapLibre Leaflet indisponível');
+    layerStreet = L.maplibreGL({
+      style:'https://tiles.openfreemap.org/styles/positron'
+    });
+  }catch(mapErr){
+    console.warn('[UniTrack] OpenFreeMap/MapLibre indisponível; usando fallback OSM.', mapErr);
+    layerStreet = L.tileLayer(
+      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {
+        maxZoom:19,
+        keepBuffer:4,
+        updateWhenIdle:true,
+        updateWhenZooming:false,
+        attribution:'&copy; OpenStreetMap contributors'
+      }
+    );
+  }
 
   /* ── ESRI World Imagery — satélite de alta resolução, gratuito ── */
   layerSat = L.tileLayer(
@@ -1276,7 +1290,17 @@ function changeSector(value){
 }
 async function loadCadastro(){
   if(cadastroCarregado)return;
-  const r=await fetch(API3,{cache:'default'});
+  const ctrlCadastro=new AbortController();
+  const tidCadastro=setTimeout(()=>ctrlCadastro.abort(),15000);
+  let r;
+  try{
+    r=await fetch(apiUrl(API3),{cache:'no-store',signal:ctrlCadastro.signal});
+  }catch(e){
+    if(e&&e.name==='AbortError') throw new Error('Cadastro de setores excedeu 15s de resposta');
+    throw e;
+  }finally{
+    clearTimeout(tidCadastro);
+  }
   if(!r.ok)throw new Error('Cadastro de setores HTTP '+r.status);
   const raw=await r.json();
   const veiculos=Array.isArray(raw.veiculos)?raw.veiculos:[];
