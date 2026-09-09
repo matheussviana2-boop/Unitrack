@@ -21,10 +21,10 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
-<!-- OpenFreeMap Positron via MapLibre GL + ponte Leaflet. Versões fixadas para evitar quebra em atualizações do CDN. -->
-<link href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css" rel="stylesheet"/>
-<script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
+<!-- OpenFreeMap Positron via MapLibre GL + integração Leaflet -->
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
 
 
 <style>
@@ -765,7 +765,7 @@ const API3 = '/api/cadastro';
 /* Cache-busting: timestamp na URL garante dado fresco em qualquer proxy/CDN */
 function apiUrl(base){ return base+'?_='+Date.now(); }
 const RSEC=60;
-let mapL,cluster,singleLayer,layerStreet,layerSat,currentLayer='street';
+let mapL,cluster,singleLayer,layerStreet,layerStreetPositron=null,layerSat,currentLayer='street';
 let trailLayer=null; // layerGroup dedicado ao rastro
 let _trailRenderer=null; // renderer SVG explícito — mais compatível mobile/WebKit
 let allV=[],filt=[],mkrs={},cdInt=null,cd=RSEC,activeV=null,searchQ='',selIdx=-1;
@@ -992,41 +992,41 @@ function _ensureTrailLayer(){}
 function _drawTrailFromBuffer(){}
 
 /* ── MAP ── */
+/*
+  Estratégia robusta:
+  - Leaflet inicializa primeiro com um fallback OSM raster estável.
+  - O OpenFreeMap Positron é acoplado DEPOIS, sem bloquear o boot do UniTrack.
+  - Se MapLibre/WebGL falhar em algum celular, o sistema continua funcionando
+    com o fallback, em vez de ficar preso na tela "Conectando...".
+*/
 function initMap(){
   mapL=L.map('map',{zoomControl:false,attributionControl:false}).setView([-15.8,-47.9],5);
 
-  /* ── OpenFreeMap Positron — principal; fallback raster mantém o app utilizável se WebGL/MapLibre falhar ── */
-  try{
-    if(typeof L.maplibreGL!=='function') throw new Error('MapLibre Leaflet indisponível');
-    layerStreet = L.maplibreGL({
-      style:'https://tiles.openfreemap.org/styles/positron'
-    });
-  }catch(mapErr){
-    console.warn('[UniTrack] OpenFreeMap/MapLibre indisponível; usando fallback OSM.', mapErr);
-    layerStreet = L.tileLayer(
-      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      {
-        maxZoom:19,
-        keepBuffer:4,
-        updateWhenIdle:true,
-        updateWhenZooming:false,
-        attribution:'&copy; OpenStreetMap contributors'
-      }
-    );
-  }
+  /* Fallback Street: fica por baixo do Positron e garante que o app nunca trave por causa do WebGL. */
+  layerStreet = L.tileLayer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {
+      maxZoom:19,
+      keepBuffer:4,
+      updateWhenIdle:true,
+      updateWhenZooming:false,
+      attribution:'&copy; OpenStreetMap contributors'
+    }
+  );
 
-  /* ── ESRI World Imagery — satélite de alta resolução, gratuito ── */
+  /* ESRI World Imagery — satélite mantido exatamente como antes. */
   layerSat = L.tileLayer(
     'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     {
       maxZoom:19,
-      keepBuffer: 4,
-      updateWhenIdle: true,
-      updateWhenZooming: false,
+      keepBuffer:4,
+      updateWhenIdle:true,
+      updateWhenZooming:false,
       attribution:'Tiles &copy; Esri'
     }
   );
 
+  /* Primeiro sobe a base estável. O Positron é tentado depois que o initMap terminar. */
   layerStreet.addTo(mapL);
 
   cluster=L.markerClusterGroup({
@@ -1043,35 +1043,79 @@ function initMap(){
       });
     }
   });
-  // Pane dedicado para o rastro — z-index 350 (entre tiles 200 e marcadores 400)
+
   mapL.createPane('trailPane');
   mapL.getPane('trailPane').style.zIndex = 350;
   mapL.getPane('trailPane').style.pointerEvents = 'none';
-  // SVG renderer explícito — mais compatível com mobile/WebKit que o canvas padrão
   _trailRenderer = L.svg({pane:'trailPane'});
   trailLayer = L.layerGroup([], {pane:'trailPane'}).addTo(mapL);
 
   singleLayer=L.layerGroup().addTo(mapL);
   mapL.addLayer(cluster);
   mapL.on('click',()=>{ if(!activeV) clearSelection(); });
+
+  /* IMPORTANTE: roda em outro ciclo do event loop.
+     Assim, mesmo que MapLibre dê erro no aparelho, o init do UniTrack já terminou. */
+  setTimeout(tryEnablePositron, 50);
+}
+
+function tryEnablePositron(){
+  try{
+    if(!mapL || typeof L.maplibreGL!=='function'){
+      console.warn('[UniTrack] MapLibre Leaflet indisponível; Street seguirá no fallback OSM.');
+      return;
+    }
+
+    layerStreetPositron = L.maplibreGL({
+      style:'https://tiles.openfreemap.org/styles/positron'
+    });
+
+    /* Mantém o OSM raster por baixo. Se o Positron falhar, o mapa continua utilizável. */
+    if(currentLayer==='street'){
+      layerStreetPositron.addTo(mapL);
+    }
+
+    try{
+      const glMap = typeof layerStreetPositron.getMaplibreMap==='function'
+        ? layerStreetPositron.getMaplibreMap()
+        : null;
+      if(glMap){
+        glMap.on('load',()=>console.log('[UniTrack] OpenFreeMap Positron carregado.'));
+        glMap.on('error',(ev)=>console.warn('[UniTrack] Erro no Positron; fallback OSM permanece ativo.',ev&&ev.error?ev.error:ev));
+      }
+    }catch(_e){}
+  }catch(mapErr){
+    layerStreetPositron=null;
+    console.warn('[UniTrack] Não foi possível ativar o OpenFreeMap Positron; fallback OSM mantido.',mapErr);
+  }
 }
 
 function setLayer(type){
   if(type===currentLayer)return;
+
   if(type==='satellite'){
     if(layerStreet && mapL.hasLayer(layerStreet)) mapL.removeLayer(layerStreet);
-    if(layerSat) layerSat.addTo(mapL);
+    if(layerStreetPositron && mapL.hasLayer(layerStreetPositron)) mapL.removeLayer(layerStreetPositron);
+    if(layerSat && !mapL.hasLayer(layerSat)) layerSat.addTo(mapL);
     document.getElementById('btnStreet').classList.remove('active');
     document.getElementById('btnSat').classList.add('active');
   }else{
     if(layerSat && mapL.hasLayer(layerSat)) mapL.removeLayer(layerSat);
-    if(layerStreet) layerStreet.addTo(mapL);
+
+    /* Fallback primeiro; Positron por cima. */
+    if(layerStreet && !mapL.hasLayer(layerStreet)) layerStreet.addTo(mapL);
+    try{
+      if(layerStreetPositron && !mapL.hasLayer(layerStreetPositron)) layerStreetPositron.addTo(mapL);
+    }catch(mapErr){
+      console.warn('[UniTrack] Positron falhou ao reabrir; usando fallback OSM.',mapErr);
+    }
+
     document.getElementById('btnSat').classList.remove('active');
     document.getElementById('btnStreet').classList.add('active');
   }
+
   currentLayer=type;
 }
-
 /* ── STATUS ── */
 function getStatus(v){
   var dh=v.datahora;
@@ -1290,17 +1334,7 @@ function changeSector(value){
 }
 async function loadCadastro(){
   if(cadastroCarregado)return;
-  const ctrlCadastro=new AbortController();
-  const tidCadastro=setTimeout(()=>ctrlCadastro.abort(),15000);
-  let r;
-  try{
-    r=await fetch(apiUrl(API3),{cache:'no-store',signal:ctrlCadastro.signal});
-  }catch(e){
-    if(e&&e.name==='AbortError') throw new Error('Cadastro de setores excedeu 15s de resposta');
-    throw e;
-  }finally{
-    clearTimeout(tidCadastro);
-  }
+  const r=await fetch(API3,{cache:'default'});
   if(!r.ok)throw new Error('Cadastro de setores HTTP '+r.status);
   const raw=await r.json();
   const veiculos=Array.isArray(raw.veiculos)?raw.veiculos:[];
@@ -2063,8 +2097,27 @@ function updateCardMode(){
 window.addEventListener('resize',updateCardMode);
 updateCardMode();
 
-initMap();
-setTimeout(load,300);
+/* Boot protegido: falha de mapa não pode deixar o app preso eternamente no loading. */
+setTimeout(()=>{
+  const ov=document.getElementById('ovL');
+  if(ov && !ov.classList.contains('hidden') && allV.length===0){
+    console.warn('[UniTrack] Watchdog de inicialização: forçando nova tentativa de carga.');
+    load().catch(()=>{});
+  }
+},20000);
+
+try{
+  initMap();
+  setTimeout(load,300);
+}catch(initErr){
+  console.error('[UniTrack] Falha ao inicializar mapa:',initErr);
+  const ov=document.getElementById('ovL');
+  const er=document.getElementById('ovE');
+  const msg=document.getElementById('erMsg');
+  if(ov)ov.classList.add('hidden');
+  if(er)er.classList.remove('hidden');
+  if(msg)msg.textContent='Falha ao inicializar o mapa. Reabra o aplicativo.';
+}
 </script>
 
 <div id="pwaInstallBanner" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:9999;background:#ffffff;border-top:1.5px solid #e0e0e0;padding:14px 16px;box-shadow:0 -4px 20px rgba(0,0,0,0.12);flex-direction:column;gap:10px;">
